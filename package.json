@@ -6,7 +6,9 @@
         "aws-sdk": "^2.0.15",
         "dropbox":"^0.10.3",
         "oauth":"~0.9.11",
-        "request":"~2.40.0"
+        "request":"~2.40.0",
+        "instagram-node":"0.5.1",
+        "clone": "0.1.11"
     },
     "repository" : {
         "type":"git",
@@ -20,9 +22,11 @@
             "s3": "aws/s3.js",
             "delicious": "delicious/delicious.js",
             "pinboard": "pinboard/pinboard.js",
+            "fitbit": "fitbit/fitbit.js",
             "flickr": "flickr/flickr.js",
             "dropbox": "dropbox/dropbox.js",
-            "swarm":"swarm/swarm.js"
+            "swarm":"swarm/swarm.js",
+            "instagram" : "instagram/instagram.js"
         }
     },
     "devDependencies": {
@@ -32,7 +36,9 @@
         "grunt-simple-mocha": "0.4.0",
         "grunt-contrib-jshint": "0.10.0",
         "mocha": "1.21.4",
+        "nock": "^0.48.0",
         "should": "4.0.4",
+        "sinon": "1.10.3",
         "supertest": "^0.13.0"
     }
 }
