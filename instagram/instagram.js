@@ -111,38 +111,42 @@ module.exports = function(RED) {
             var carryOnPaginating = true;
             
             if (err) {
-                node.warn('Instagram node has failed to fetch latest liked media : '+err);
+                node.warn('Instagram node has failed to fetch latest media : '+err);
             }
             
-            for(var i = 0; i < medias.length; i++) {
-                if (node.inputType === "like") { // like is a special case as per Instagram API behaviour
-                    if(areWeInPaginationRecursion === false) { // need to set the pointer of latest served liked image before pagination occurs
-                        idOfLikedReturned = medias[0].id;
+            if(medias) {
+                for(var i = 0; i < medias.length; i++) {
+                    if (node.inputType === "like") { // like is a special case as per Instagram API behaviour
+                        if(areWeInPaginationRecursion === false) { // need to set the pointer of latest served liked image before pagination occurs
+                            idOfLikedReturned = medias[0].id;
+                        }
+                        if (medias[i].id === node.latestLikedID || node.latestLikedID === DUMMY) { // we finally found the image we already returned or has been there at init
+                            node.latestLikedID = idOfLikedReturned; // we need to assign the latest liked to the one we returned first => can only do node at the end, otherwise we'd never match break condition and always return everything
+                            carryOnPaginating = false;
+                            break;
+                        }
                     }
-                    if (medias[i].id === node.latestLikedID || node.latestLikedID === DUMMY) { // we finally found the image we already returned or has been there at init
-                        node.latestLikedID = idOfLikedReturned; // we need to assign the latest liked to the one we returned first => can only do node at the end, otherwise we'd never match break condition and always return everything
-                        carryOnPaginating = false;
-                        break;
+                    
+                    if (node.inputType === "photo" && i === 0 && (areWeInPaginationRecursion === false) ) { // only set the served self content ID to equal the first media of the first pagination page and ignore on subsequent pages 
+                        idOfSelfReturned = medias[0].id;
                     }
-                }
-                
-                if (node.inputType === "photo" && i === 0 && (areWeInPaginationRecursion === false) ) { // only set the served self content ID to equal the first media of the first pagination page and ignore on subsequent pages 
-                    idOfSelfReturned = medias[0].id;
-                }
-                
-                if (node.inputType === "photo" && (medias[i].id === node.latestSelfContentID) ) { // if we say to the Insta API that we want images more recent than image id "blah", it returns image with that id too
-                 //deliberate no-op
-                } else if(medias[i].type === IMAGE) {
-                    var url = medias[i].images.standard_resolution.url;
-                    if (node.outputType === "link") {
-                        msg.payload = url;
-                        node.send(msg);
-                    } else if (node.outputType === "file") {
-                        downloadImageAndSendAsBuffer(node, url, msg);
+                    
+                    if (node.inputType === "photo" && (medias[i].id === node.latestSelfContentID) ) { // if we say to the Insta API that we want images more recent than image id "blah", it returns image with that id too
+                     //deliberate no-op
+                    } else if(medias[i].type === IMAGE) {
+                        var url = medias[i].images.standard_resolution.url;
+                        if (node.outputType === "link") {
+                            msg.payload = url;
+                            node.send(msg);
+                        } else if (node.outputType === "file") {
+                            downloadImageAndSendAsBuffer(node, url, msg);
+                        }
                     }
-                }
+                }   
+            } else if(areWeInPaginationRecursion === false) {
+                node.warn('Instagram node has failed to fetch any media');
             }
-            if(pagination.next && carryOnPaginating) {
+            if(pagination && pagination.next && carryOnPaginating) {
                 areWeInPaginationRecursion = true;
                 pagination.next(returnPagefulsOfStuff);
             } else {
@@ -288,6 +292,10 @@ module.exports = function(RED) {
             }
             if (data.error) {
                 return res.send("oauth error: " + data.error);
+            }
+            
+            if(result.statusCode !== 200) {
+                return res.send("Instagram replied with the unexpected HTTP status code of " + result.statusCode + "\nDetails:\n" + data);
             }
             
             if(data.user.username) {

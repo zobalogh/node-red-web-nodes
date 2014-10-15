@@ -24,6 +24,8 @@ var nock = helper.nock;
 
 var testInterval;
 
+var firstCallOfStub = true; // TODO horrible solution but how do I "unstub" node.warn?
+
 // TODO clear out actual user information from nocked data
 
 describe('instagram nodes', function() {
@@ -35,6 +37,9 @@ describe('instagram nodes', function() {
     });
 
     afterEach(function(done) {
+        if(nock) {
+            nock.cleanAll();
+        }
         if (testInterval !== null) {
             clearInterval(testInterval);
         }
@@ -57,8 +62,6 @@ describe('instagram nodes', function() {
             
             var querystring = require("querystring");
             var redirectURIQueryString = querystring.escape(redirectURI);
-            
-            console.log(redirectURIQueryString);
             
             var flow = [{id:"n1", type:"helper", wires:[["n2"]]},
                         {id:"n4", type:"instagram-credentials"},
@@ -84,8 +87,25 @@ describe('instagram nodes', function() {
             });
         });
         
+        it('reports an error when the UI doesn\'t supply all credentials', function(done) {
+            var flow = [{id:"n1", type:"helper", wires:[["n2"]]},
+                        {id:"n4", type:"instagram-credentials"},
+                        {id:"n2", type:"instagram", instagram: "n4", wires:[["n3"]],"inputType":"like","outputType":"link"},
+                        {id:"n3", type:"helper"}];
+            helper.load(instagramNode, flow, function() {
+                helper.request()
+                .get('/instagram-credentials/auth')
+                .end(function(err, res) {
+                    if (err) return done(err);
+                    res.text.should.equal("ERROR: Received query from UI without the needed credentials");
+                    done();
+                });
+            });
+        });
+        
         if (nock) { // featues requiring HTTP communication/mocking // TODO check if all tests require nock here
-            it('can do oauth dance', function(done) {
+            
+            function doOauthDance(done, matchCsrfToken, return200, serveUserName, serveAccessToken) {
                 var csrfToken; // required to get and process/pass on the token, otherwise OAuth fails
                 
                 var clientID = 123456789;
@@ -101,17 +121,41 @@ describe('instagram nodes', function() {
                             {id:"n4", type:"instagram-credentials"},
                             {id:"n2", type:"instagram", instagram: "n4", wires:[["n3"]],"inputType":"like","outputType":"link"},
                             {id:"n3", type:"helper"}];
-                var scope = nock('https://api.instagram.com')
-                .post('/oauth/access_token', "client_id=" + clientID + "&client_secret=" + clientSecret + "&grant_type=authorization_code&redirect_uri=" + redirectURIQueryString + "&code=" + sessionCode)
-                .reply(200, {"access_token":accessToken,"user":{"username":"UserJoe","bio":"","website":"","profile_picture":"http://profile.picture","full_name":"UserJoe","id":"anUserID"}})
-                .get('/v1/users/self?access_token=' + accessToken)
-                .reply(200, {"meta":{"code":200},"data":{"username":"UserJoe"}});
+                
+                var scope = null;
+                
+                if(return200 === true && serveUserName === true && serveAccessToken === true) {
+                    scope = nock('https://api.instagram.com')
+                    .post('/oauth/access_token', "client_id=" + clientID + "&client_secret=" + clientSecret + "&grant_type=authorization_code&redirect_uri=" + redirectURIQueryString + "&code=" + sessionCode)
+                    .reply(200, {"access_token":accessToken,"user":{"username":"UserJoe","bio":"","website":"","profile_picture":"http://profile.picture","full_name":"UserJoe","id":"anUserID"}})
+                    .get('/v1/users/self?access_token=' + accessToken)
+                    .reply(200, {"meta":{"code":200},"data":{"username":"UserJoe"}});
+                }else if(return200 === true && serveUserName === true && serveAccessToken === false) {
+                    scope = nock('https://api.instagram.com')
+                    .post('/oauth/access_token', "client_id=" + clientID + "&client_secret=" + clientSecret + "&grant_type=authorization_code&redirect_uri=" + redirectURIQueryString + "&code=" + sessionCode)
+                    .reply(200, {"user":{"username":"UserJoe","bio":"","website":"","profile_picture":"http://profile.picture","full_name":"UserJoe","id":"anUserID"}});
+                }
+                else if(return200 === true && serveUserName === false){
+                    scope = nock('https://api.instagram.com')
+                    .post('/oauth/access_token', "client_id=" + clientID + "&client_secret=" + clientSecret + "&grant_type=authorization_code&redirect_uri=" + redirectURIQueryString + "&code=" + sessionCode)
+                    .reply(200, {"access_token":accessToken,"user":{"bio":"","website":"","profile_picture":"http://profile.picture","full_name":"UserJoe","id":"anUserID"}})
+                    .get('/v1/users/self?access_token=' + accessToken)
+                    .reply(200, {"meta":{"code":200},"data":{"username":"UserJoe"}});
+                } else {
+                    scope = nock('https://api.instagram.com')
+                    .post('/oauth/access_token', "client_id=" + clientID + "&client_secret=" + clientSecret + "&grant_type=authorization_code&redirect_uri=" + redirectURIQueryString + "&code=" + sessionCode)
+                    .reply(404, "No tokens found, sorry!");
+                }
+                
                 helper.load(instagramNode, flow, function() {
                     helper.request()
                     .get('/instagram-credentials/auth?node_id=n2&client_id=' + clientID + '&client_secret=' + clientSecret + '&redirect_uri=' + redirectURI)
                     .expect(function(res) {
                         try {
                             csrfToken = res.headers.location.split("&state=n2%3A")[1];
+                            if(matchCsrfToken === false) {
+                                csrfToken = "sorryMismatchingToken";
+                            }
                         } catch (err) {
                             done(err);
                         }
@@ -120,34 +164,109 @@ describe('instagram nodes', function() {
                     .end(function(err, res) {
                         if (err) return done(err);
                         // now call the callback URI as if Instagram called it
-                        helper.request()
-                        .get('/instagram-credentials/auth/callback?code=' + sessionCode + '&state=n2:' + csrfToken)
-                        .expect(function(res) {
-                            try {
-                                res.text.indexOf("Successfully authorized with Instagram").should.not.equal(-1); // should succeed
-                            } catch (err) {
-                                done(err);
+                        if(matchCsrfToken === true) {
+                            if(return200 === true && serveUserName === true && serveAccessToken === true) {
+                                helper.request()
+                                .get('/instagram-credentials/auth/callback?code=' + sessionCode + '&state=n2:' + csrfToken)
+                                .expect(function(res) {
+                                    try {
+                                        res.text.indexOf("Successfully authorized with Instagram").should.not.equal(-1); // should succeed
+                                    } catch (err) {
+                                        done(err);
+                                    }
+                                })
+                                .end(function(err, res) {
+                                    if (err) return done(err);
+                                    // now call the callback URI as if Instagram called it
+                                    done();
+                                });  
+                            } else if (return200 === true && serveUserName === true && serveAccessToken === false) {
+                                helper.request()
+                                .get('/instagram-credentials/auth/callback?code=' + sessionCode + '&state=n2:' + csrfToken)
+                                .end(function(err, res) {
+                                    if (err) return done(err);
+                                    res.text.should.equal("Error! Instagram node has failed to fetch a valid access token.");
+                                    done();
+                                }); 
                             }
-                        })
-                        .end(function(err, res) {
-                            if (err) return done(err);
-                            // now call the callback URI as if Instagram called it
-                            done();
-                        });
+                            else if(return200 === true && serveUserName === false){
+                                helper.request()
+                                .get('/instagram-credentials/auth/callback?code=' + sessionCode + '&state=n2:' + csrfToken)
+                                .end(function(err, res) {
+                                    if (err) return done(err);
+                                    res.text.should.equal("Error! Instagram node has failed to fetch the username.");
+                                    done();
+                                }); 
+                            } else {
+                                helper.request()
+                                .get('/instagram-credentials/auth/callback?code=' + sessionCode + '&state=n2:' + csrfToken)
+                                .end(function(err, res) {
+                                    if (err) return done(err);
+                                    res.text.should.equal("Instagram replied with the unexpected HTTP status code of 404\nDetails:\nNo tokens found, sorry!");
+                                    done();
+                                }); 
+                            }
+                        } else {
+                            helper.request()
+                            .get('/instagram-credentials/auth/callback?code=' + sessionCode + '&state=n2:' + csrfToken)
+                            .end(function(err, res) {
+                                if (err) return done(err);
+                                res.text.should.equal("CSRF token mismatch, possible cross-site request forgery attempt.");
+                                done();
+                            });   
+                        }
                     });
                 });
+            }
+            
+            it('can do oauth dance', function(done) {
+                doOauthDance(done, true, true, true, true);
             });
             
-            it('handles a photo upload and init', function(done) {
-                // need to fake the HTTP requests of the init sequence, then straight away the sequence of getting a second photo
-                
+            it('reports csrftoken mismatch', function(done) {
+                doOauthDance(done, false, true, true, true);
+            });
+            
+            it('reports failure if Instagram throws an error', function(done) {
+                doOauthDance(done, true, false, true, true);
+            });
+            
+            it('reports failure if Instagram doesn\'t serve a user name', function(done) {
+                doOauthDance(done, true, true, false, true);
+            });
+            
+            it('reports failure if Instagram doesn\'t serve an access token', function(done) {
+                doOauthDance(done, true, true, true, false);
+            });  
+
+            
+            
+            function fetchUploadedPhotos(done, workingFirstRequest, workingSubsequentRequest) {
+                // need to fake the HTTP requests of the init sequence, then straight away the sequence of getting a second photo 
                 var photoURI = 'http://mytesturl.com/aPhotoStandard.jpg';
                 
-                var scope = nock('https://api.instagram.com')
-               .get('/v1/users/self/media/recent?count=1&access_token=AN_ACCESS_TOKEN') // request to get the initial photos uploaded by the user
-               .reply(200, {"pagination":{},"meta":{"code":200},"data":[{"attribution":null,"tags":[],"type":"image","id":"MY_OLD_MEDIA_ID"}]})
-               .get('/v1/users/self/media/recent?min_id=MY_OLD_MEDIA_ID&access_token=AN_ACCESS_TOKEN')
-               .reply(200, {"pagination":{},"meta":{"code":200},"data":[{"attribution":null,"tags":[],"type":"image","images":{"standard_resolution":{"url":photoURI,"width":640,"height":640}},"id":"A_NEW_PHOTO_ID"}]});
+                var scope;
+                
+                if(workingFirstRequest === true && workingSubsequentRequest === true) {
+                    scope = nock('https://api.instagram.com')
+                    .get('/v1/users/self/media/recent?count=1&access_token=AN_ACCESS_TOKEN') // request to get the initial photos uploaded by the user
+                    .reply(200, {"pagination":{},"meta":{"code":200},"data":[{"attribution":null,"tags":[],"type":"image","id":"MY_OLD_MEDIA_ID"}]})
+                    .get('/v1/users/self/media/recent?min_id=MY_OLD_MEDIA_ID&access_token=AN_ACCESS_TOKEN')
+                    .reply(200, {"pagination":{},"meta":{"code":200},"data":[{"attribution":null,"tags":[],"type":"image","images":{"standard_resolution":{"url":photoURI,"width":640,"height":640}},"id":"A_NEW_PHOTO_ID"}]});
+                    
+                } else if(workingFirstRequest === true && workingSubsequentRequest === false) {
+                    scope = nock('https://api.instagram.com')
+                    .get('/v1/users/self/media/recent?count=1&access_token=AN_ACCESS_TOKEN') // request to get the initial photos uploaded by the user
+                    .reply(200, {"pagination":{},"meta":{"code":200},"data":[{"attribution":null,"tags":[],"type":"image","id":"MY_OLD_MEDIA_ID"}]})
+                    .get('/v1/users/self/media/recent?min_id=MY_OLD_MEDIA_ID&access_token=AN_ACCESS_TOKEN')
+                    .reply(500, "The second call to the API doesn't work today, sorry!");
+                } else if(workingFirstRequest === false && workingSubsequentRequest === true) {
+                    scope = nock('https://api.instagram.com')
+                    .get('/v1/users/self/media/recent?count=1&access_token=AN_ACCESS_TOKEN') // request to get the initial photos uploaded by the user
+                    .reply(500, "Sorry, we're terribly broken!");
+                } else {
+                    // won't actually occur with current tests as the first failure breaks everything
+                }
 
                 helper.load(instagramNode, [{id:"instagramCredentials1", type:"instagram-credentials"},
                                             {id:"instagramNode1", type:"instagram", instagram: "instagramCredentials1","inputType":"photo","outputType":"link", wires:[["helperNode1"]]},
@@ -166,27 +285,55 @@ describe('instagram nodes', function() {
                     var instagramNode1 = helper.getNode("instagramNode1");
                     var helperNode1 = helper.getNode("helperNode1");
                     
-                    helperNode1.on("input", function(msg) {
-                        try {
-                            if (testInterval !== null) {
-                                clearInterval(testInterval);
+                    if(workingSubsequentRequest === false) {
+                        var sinon = require("sinon");
+                        sinon.stub(instagramNode1, 'warn', function() { // TODO fix the stub scope!
+                            if(firstCallOfStub === true) {
+                                firstCallOfStub = false;
+                                done();
                             }
-                            msg.payload.should.equal(photoURI);
-                            done();
-                        } catch(err) {
-                            if (testInterval !== null) {
-                                clearInterval(testInterval);
-                            }
-                            done(err);
-                        }
-                    });
+                        });
+                    }
                     
-                    var testInterval = setInterval(function() { // self trigger
-                        if(instagramNode1._events.input) {
-                            instagramNode1.receive({payload:""});
-                        }
-                    }, 100);
+                    if(workingFirstRequest === true) {
+                        helperNode1.on("input", function(msg) {
+                            try {
+                                if (testInterval !== null) {
+                                    clearInterval(testInterval);
+                                }
+                                msg.payload.should.equal(photoURI);
+                                done();
+                            } catch(err) {
+                                if (testInterval !== null) {
+                                    clearInterval(testInterval);
+                                }
+                                done(err);
+                            }
+                        });
+                        
+                        var testInterval = setInterval(function() { // self trigger
+                            if(instagramNode1._events.input) {
+                                instagramNode1.receive({payload:""});
+                            }
+                        }, 100);
+                    }
                 });
+            }
+            
+            it('handles a photo upload and init', function(done) {
+                fetchUploadedPhotos(done, true, true);
+            });
+            
+            // TODO => Find out how to stub the first request, the problem is that it happens straight during init!
+//            it('reports a failure when it fails to get initial user photos', function(done) {
+//                fetchUploadedPhotos(done, false, true);
+//            });
+            
+            // TODO, stubbing the likes test doesn't make sense right now as the above TODO is to be solved
+            // furthermore the stubbing scoping is also to be solved
+            
+            it('reports a failure when it fails to get subsequent user photos', function(done) {
+                fetchUploadedPhotos(done, true, false);
             });
             
             it('handles like with init', function(done) {
