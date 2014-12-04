@@ -1,0 +1,197 @@
+<!--
+  Copyright 2014 IBM Corp.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+
+<script type="text/x-red" data-template-name="strava-credentials">
+    <div id="node-config-strava-app-keys">
+        <div class="form-row">
+            <p style="margin-top: 10px;"><b>1.</b> Create your own app at <a href="https://www.strava.com/settings/api" target="_blank" style="text-decoration:underline;">strava.com</a></p>
+        </div>
+        <div class="form-tips" id="node-config-tooltip">
+            #
+        </div>
+        <div class="form-row">
+            <p style="margin-top: 10px;"><b>2.</b> Copy the app details here:</p>
+        </div>
+        <div class="form-row">
+          <label for="node-config-input-clientID"><i class="fa fa-user"></i> Client ID</label>
+          <input type="text" id="node-config-input-clientID">
+        </div>
+        <div class="form-row" id="node-config-clientSecret">
+            <label for="node-config-input-clientSecret"><i class="fa fa-lock"></i>Client Secret</label>
+            <input type="password" id="node-config-input-clientSecret">
+        </div>
+        <div class="form-row" id="node-config-redirectURI">
+            <label for="node-config-input-redirectURI"><i class="fa fa-user"></i>Redirect URI</label>
+            <input type="text" id="node-config-input-redirectURI">
+        </div>
+        <div class="form-row">
+           <label>&nbsp;</label>
+           <a class="btn" id="node-config-start-auth" href="#" target="_blank">Authenticate with Strava</a>
+        </div>
+    </div>
+    <div id="node-config-strava-user">
+        <div class="form-row">
+            <label><i class="fa fa-user"></i> Strava User</label><span id="node-config-strava-username" class="input-xlarge uneditable-input"></span>
+        </div>
+        <input type="hidden" id="node-config-input-username">
+    </div>
+</script>
+
+<script type="text/x-red" data-template-name="strava">
+    <div class="form-row">
+        <label for="node-input-strava"><i class="fa fa-user"></i> User</label>
+        <input type="text" id="node-input-strava">
+    </div>
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+</script>
+
+<script type="text/x-red" data-help-name="strava">
+    <p>Get your most recent activity on Strava.</p>
+</script>
+
+<script type="text/javascript">
+(function() {
+
+    RED.nodes.registerType('strava-credentials',{
+        category: 'config',
+        defaults: {
+            clientID: {value:""}
+        },  
+        credentials: {
+            clientID: {type:"text"},
+            clientSecret: { type:"password"},
+            redirectURI: { type:"text"},
+            access_token: { type:"password"}
+        },
+        label: function() {
+            return this.clientID;
+        },
+        exportable: false,
+        oneditprepare: function() {
+            var id = this.id;
+                    
+            function updateStravaAuthButton() {
+                var v1 = $("#node-config-input-clientID").val();
+                var v2 = $("#node-config-input-clientSecret").val();
+                
+                $("#node-config-start-auth").toggleClass("disabled",(v1.length === 0 || v2.length === 0));
+            }
+            $("#node-config-input-clientID").on('change keydown paste input',updateStravaAuthButton);
+            $("#node-config-input-clientSecret").on('change keydown paste input',updateStravaAuthButton);
+            
+            function updateStravaScreenName(sn) {
+                $("#node-config-strava-app-keys").hide();
+                $("#node-config-strava-user").show();
+                $("#node-config-input-username").val(sn);
+                $("#node-config-strava-username").html(sn);
+            }
+            
+            function pollStravaCredentials() {
+                $.getJSON('credentials/strava-credentials/'+id,function(data) {
+                    if (data.username) {
+                        $("#node-config-dialog-ok").button("enable");
+                        updateStravaScreenName(data.username);
+                        delete window.stravaConfigNodeIntervalId;
+                    } else {
+                        window.stravaConfigNodeIntervalId = window.setTimeout(pollStravaCredentials,2000);
+                    }
+                });
+            }
+            
+            updateStravaAuthButton();
+            
+            if (this.username) {
+                updateStravaScreenName(this.username);
+            } else {
+                $("#node-config-strava-app-keys").show();
+                $("#node-config-strava-user").hide();
+                $("#node-config-dialog-ok").button("disable");
+            }
+            
+            function updateRedirectURI() {
+               var protocol = location.protocol;
+                var separator = '//';
+                var host = location.hostname;
+                var port = location.port;
+                var callbackPath = 'strava-credentials/auth/callback';
+                
+                var constructedURI = protocol + separator + host + ':' + port + '/' + callbackPath;
+                
+                var constructedURIToShow;
+                if(host.valueOf().indexOf("localhost") !== -1 || host.valueOf().indexOf("127.0.0.1") !== -1) { // these are whitelisted
+                    constructedURIToShow = "http://example.com";
+                } else {
+                    constructedURIToShow = protocol + separator + host;
+                }
+                
+                $("#node-config-tooltip").html('<p>Please configure Strava to accept the following <b>Authorization Callback Domain</b> for authentication of your application: </p>\n<code>' + constructedURIToShow + '</code>');
+                $("#node-config-input-redirectURI").val(constructedURI);
+                $("#node-config-input-redirectURI").hide();
+                $("#node-config-redirectURI").hide();
+            }
+            
+            updateRedirectURI();
+            
+            $("#node-config-start-auth").mousedown(function() {
+                var clientID = $("#node-config-input-clientID").val();
+                var clientSecret = $("#node-config-input-clientSecret").val();
+                var redirectURI = $("#node-config-input-redirectURI").val();
+                
+                var query = "node_id=" + id + "&client_id=" + clientID + "&client_secret=" + clientSecret + "&redirect_uri=" + redirectURI;
+                var url = 'strava-credentials/auth/?' + query;
+                $(this).attr("href",url);
+            });
+            
+            $("#node-config-start-auth").click(function(e) {
+                var clientID = $("#node-config-input-clientID").val();
+                var redirectURI = $("#node-config-input-redirectURI").val();
+                var clientSecret = $("#node-config-input-redirectURI").val();
+                if (clientID === "" || redirectURI === "" || clientSecret === "") {
+                    e.preventDefault();
+                }
+            });
+        },
+        oneditsave: function() {
+        },
+        oneditcancel: function() {
+        }
+    });
+})();
+</script>
+
+<script type="text/javascript">
+    RED.nodes.registerType('strava',{
+        category: 'fitness',
+        defaults: {
+            strava: { type:"strava-credentials", required: true },
+            name: {value:""}
+        },
+        color:"#FFAD7C",
+        inputs:1,
+        outputs:1,
+        icon: "strava.png",
+        label: function() {
+            return this.name||"Strava";
+        },
+        labelStyle: function() {
+            return this.name?"node_label_italic":"";
+        }
+    });
+</script>
